@@ -1,5 +1,7 @@
 import asyncio
 from collections.abc import Callable
+from functools import lru_cache
+from pathlib import Path
 
 import pygame as pg
 
@@ -58,4 +60,27 @@ def bind_controls(mapping: dict[str, list[pg.Event]]):
         return [action for event in events if (action := get_action(event))]
 
     return map_events_to_actions
+
+
+def asset_loader(path: Path):
+    if not path.is_dir():
+        raise ValueError(f"Path does not exist: {path}")
+
+    @lru_cache
+    def get_asset(name: str):
+        matching = path.glob(f"{name}*")
+        try:
+            asset_path = next(matching)
+        except StopIteration:
+            raise LookupError(f"Asset not found: {path / name}")
+
+        if load_fn := {
+            **{_: pg.image.load for _ in [".png"]},
+            **{_: pg.mixer.Sound for _ in [".ogg"]},
+        }.get(asset_path.suffix.lower()):
+            return load_fn(asset_path)
+
+        raise ValueError(f"No loader for asset type: {asset_path.suffix}")
+
+    return get_asset
 
