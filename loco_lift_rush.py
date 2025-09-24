@@ -32,7 +32,7 @@ import random
 from collections.abc import Generator
 from dataclasses import dataclass, field
 from enum import Enum
-from functools import cache
+from functools import lru_cache
 
 import pygame as pg
 
@@ -145,9 +145,10 @@ def play() -> SceneFn:
         "served_users": 0,
         "complaints": 0,
         "all_users": [],
+        "camera": pg.FRect(0, 0, WIDTH, HEIGHT),
     }
 
-    @cache
+    @lru_cache
     def get_background(screen: pg.Surface) -> pg.Surface:
         bg = pg.Surface(screen.get_size()).convert()
         bg.fill("black")
@@ -167,6 +168,7 @@ def play() -> SceneFn:
         shared_state: dict,
     ) -> SceneFn | None:
         screen_rect = screen.get_rect()
+        camera = state["camera"]
 
         for action in get_actions(events):
             match action:
@@ -189,6 +191,7 @@ def play() -> SceneFn:
         lift.velocity *= SPEED_DAMPING
         lift.rect.y += lift.velocity.y * delta_time
         lift.rect.bottom = min(GROUND, lift.rect.bottom)
+        lift.rect.top = max(lift.rect.top, GROUND - num_floors * FLOOR_HEIGHT)
         lift_floor = (GROUND - lift.rect.bottom) // FLOOR_HEIGHT
 
         # snap to floors
@@ -200,8 +203,12 @@ def play() -> SceneFn:
                 else:
                     lift.rect.bottom -= (FLOOR_HEIGHT - offset)
 
-        screen.blit(get_background(screen))
-        pg.draw.rect(screen, "grey", lift.rect)
+        # update camera to follow lift
+        camera.center = pg.Vector2(camera.center).lerp(lift.rect.center, 0.1)
+        camera.bottom = min(camera.bottom, HEIGHT)
+
+        screen.blit(get_background(screen), (0, 0), area=camera)
+        pg.draw.rect(screen, "grey", lift.rect.move(0, -camera.top))
 
         # spawn new users
         state["time_until_next_user"] -= delta_time
@@ -330,19 +337,17 @@ def play() -> SceneFn:
 
             # user color indicates patience level: white -> red
             i = 1 if user.patience > 5 else user.patience / 5
-            pg.draw.rect(screen, (255, int(255 * i), int(255 * i)), user.rect) 
-            screen.blit(user.image, user.rect)
+            pg.draw.rect(screen, (255, int(255 * i), int(255 * i)), user.rect.move(0, -camera.top))
+            screen.blit(user.image, user.rect.move(0, -camera.top))
 
         while users_to_remove:
             state["all_users"].remove(users_to_remove.pop())
 
         # draw score
-        score = pg.Font(None, 30).render(
-            f"Served: {state['served_users']}, Complaints: {state['complaints']}",
-            True,
-            "white",
-        )
-        screen.blit(score, (10, 10))
+        happy = pg.Font(None, 30).render(f"{state['served_users']:04d}", True, "white")
+        angry = pg.Font(None, 30).render(f"{state['complaints']:04d}", True, "white")
+        screen.blit(happy, (50, 560))
+        screen.blit(angry, (300, 560))
 
     return _scene
 
