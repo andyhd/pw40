@@ -41,14 +41,15 @@ async def game(
         await asyncio.sleep(0)
 
 
-def bind_controls(mapping: dict[str, pg.Event]):
+def bind_controls(mapping: dict[str, list[pg.Event]]):
 
     def get_action(event: pg.Event) -> str | None:
-        for action, input_ in mapping.items():
-            if (
+        for action, inputs in mapping.items():
+            if any(
                 input_
                 and event.type == input_.type
                 and event.__dict__.items() >= input_.__dict__.items()
+                for input_ in inputs
             ):
                 return action
         return None

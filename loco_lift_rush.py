@@ -48,11 +48,13 @@ SNAP_THRESHOLD = 10  # pixels from floor to snap
 
 get_actions = bind_controls(
     {
-        "pressed_up": pg.Event(pg.KEYDOWN, key=pg.K_UP),
-        "released_up": pg.Event(pg.KEYUP, key=pg.K_UP),
-        "pressed_down": pg.Event(pg.KEYDOWN, key=pg.K_DOWN),
-        "released_down": pg.Event(pg.KEYUP, key=pg.K_DOWN),
-        "exit": pg.Event(pg.KEYDOWN, key=pg.K_ESCAPE),
+        "pressed_up": [pg.Event(pg.KEYDOWN, key=pg.K_UP)],
+        "released_up": [pg.Event(pg.KEYUP, key=pg.K_UP)],
+        "pressed_down": [pg.Event(pg.KEYDOWN, key=pg.K_DOWN)],
+        "released_down": [pg.Event(pg.KEYUP, key=pg.K_DOWN)],
+        "mouse_pressed": [pg.Event(pg.MOUSEBUTTONDOWN, button=1)],
+        "mouse_released": [pg.Event(pg.MOUSEBUTTONUP, button=1)],
+        "exit": [pg.Event(pg.KEYDOWN, key=pg.K_ESCAPE)],
     }
 )
 
@@ -177,7 +179,15 @@ def play() -> SceneFn:
                 case "pressed_down":
                     lift.acceleration.y = 800
 
+                case "mouse_pressed" if pg.mouse.get_pos()[1] < HEIGHT // 2:
+                    lift.acceleration.y = -800
+                case "mouse_pressed" if pg.mouse.get_pos()[1] >= HEIGHT // 2:
+                    lift.acceleration.y = 800
+
                 case "released_up" | "released_down":
+                    lift.acceleration.y = 0
+
+                case "mouse_released":
                     lift.acceleration.y = 0
 
                 case "exit":
