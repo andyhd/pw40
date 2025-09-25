@@ -16,7 +16,7 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - run: mkdir -p dist && for f in manifest; do cp -r $f dist/; done
+      - run: mkdir -p dist && for f in $(cat manifest); do cp -r $f dist/; done
 
       - run: python -m pygbag --build $GITHUB_WORKSPACE/dist
 
