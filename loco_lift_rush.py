@@ -27,7 +27,6 @@ Mechanics:
 - Building "complete" after a certain number of users served
 """
 
-import asyncio
 import random
 from collections.abc import Generator
 from dataclasses import dataclass, field
@@ -37,7 +36,7 @@ from pathlib import Path
 
 import pygame as pg
 
-from utils import SceneFn, asset_loader, game, bind_controls
+from utils import SceneFn, asset_loader, bind_controls
 
 WIDTH, HEIGHT = 800, 1200
 FLOOR_HEIGHT = 128
@@ -139,7 +138,7 @@ def users(max_floor: int = 10) -> Generator[User]:
         patience = random.choice(list(PatienceLevel)).value
         side = random.choice((0, 1))
         rect = pg.FRect(SPAWN_X[side], (max_floor - floor) * FLOOR_HEIGHT - USER_HEIGHT, USER_WIDTH, USER_HEIGHT)
-        image = assets(f"user{random.choice(range(2)):02d}").convert_alpha()
+        image = assets(f"user{random.choice(range(7)):02d}").convert_alpha()
         # image = pg.Surface((USER_WIDTH, USER_HEIGHT)).convert_alpha()
         # image.fill((0, 0, 0, 0))
         label = pg.Font(None, 30).render(f"{destination:d}", True, "darkgrey")
@@ -394,14 +393,3 @@ def main_menu() -> SceneFn:
         screen.fill("red")
 
     return _scene
-
-
-if __name__ == "__main__":
-    asyncio.run(
-        game(
-            main_menu(),
-            size=(WIDTH, HEIGHT),
-            title="Loco Lift Rush",
-            flags=pg.SCALED | pg.RESIZABLE,
-        )
-    )
