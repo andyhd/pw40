@@ -33,18 +33,22 @@ from collections.abc import Generator
 from dataclasses import dataclass, field
 from enum import Enum
 from functools import lru_cache
+from pathlib import Path
 
 import pygame as pg
 
-from utils import SceneFn, game, bind_controls
+from utils import SceneFn, asset_loader, game, bind_controls
 
-WIDTH, HEIGHT = 400, 600
-FLOOR_HEIGHT = 50
-GROUND = 550
-SPAWN_X = [-16, 400]
+WIDTH, HEIGHT = 800, 1200
+FLOOR_HEIGHT = 128
 SPEED_DAMPING = 0.9
-MAX_SNAP_SPEED = 50  # max speed to allow snapping to floor
-SNAP_THRESHOLD = 10  # pixels from floor to snap
+MAX_SNAP_SPEED = 100  # max speed to allow snapping to floor
+SNAP_THRESHOLD = 50  # pixels from floor to snap
+USER_WIDTH, USER_HEIGHT = 32, FLOOR_HEIGHT
+LIFT_WIDTH, LIFT_HEIGHT = 100, FLOOR_HEIGHT
+SPAWN_X = [-USER_WIDTH, WIDTH]
+USER_SPEED = 100
+USER_ANGRY_SPEED = 200
 
 get_actions = bind_controls(
     {
@@ -57,6 +61,8 @@ get_actions = bind_controls(
         "exit": [pg.Event(pg.KEYDOWN, key=pg.K_ESCAPE)],
     }
 )
+
+assets = asset_loader(Path(__file__).parent / "assets")
 
 
 class PatienceLevel(Enum):
@@ -93,21 +99,27 @@ class User:
 class Lift:
     """A lift."""
 
-    rect: pg.Rect = field(
-        default_factory=lambda: pg.Rect(WIDTH // 2 - 25, GROUND - 50, 50, 50))
+    rect: pg.Rect = field(default_factory=lambda: pg.Rect(WIDTH // 2 - LIFT_WIDTH // 2, 0, LIFT_WIDTH, LIFT_HEIGHT))
     """The rectangle representing the lift on screen."""
     velocity: pg.Vector2 = field(default_factory=pg.Vector2)
     """The velocity of the lift."""
     acceleration: pg.Vector2 = field(default_factory=pg.Vector2)
     """The acceleration of the lift."""
-    max_speed: float = 300
+    max_speed: float = 600
     """The maximum absolute speed of the lift."""
-    min_speed: float = 10 
+    min_speed: float = 10
     """The minimum absolute speed of the lift to be considered moving."""
     passengers: list[User | None] = field(default_factory=list)
     """The users currently on the lift."""
     capacity: int = 4
     """The maximum number of users the lift can hold."""
+
+
+def floor_y(i: int, num_floors: int) -> int:
+    """
+    Get the y-coordinate of the bottom of a floor.
+    """
+    return (num_floors - i) * FLOOR_HEIGHT
 
 
 def users(max_floor: int = 10) -> Generator[User]:
@@ -126,20 +138,16 @@ def users(max_floor: int = 10) -> Generator[User]:
         destination = random.choice(list(set(floors) - {floor}))
         patience = random.choice(list(PatienceLevel)).value
         side = random.choice((0, 1))
-        rect = pg.FRect(SPAWN_X[side], GROUND - floor * FLOOR_HEIGHT - 30, 16, 30)
-        image = pg.Surface((16, 30)).convert_alpha()
-        image.fill((0, 0, 0, 0))
-        label = pg.Font(None, 20).render(f"{destination:d}", True, "black")
+        rect = pg.FRect(SPAWN_X[side], (max_floor - floor) * FLOOR_HEIGHT - USER_HEIGHT, USER_WIDTH, USER_HEIGHT)
+        image = assets(f"user{random.choice(range(2)):02d}").convert_alpha()
+        # image = pg.Surface((USER_WIDTH, USER_HEIGHT)).convert_alpha()
+        # image.fill((0, 0, 0, 0))
+        label = pg.Font(None, 30).render(f"{destination:d}", True, "darkgrey")
         image.blit(label, (0, 0))
         yield User(floor, destination, patience, rect, image=image)
 
 
 def play() -> SceneFn:
-    lift = Lift()
-    lift.passengers = [None] * lift.capacity
-
-    num_floors = 10
-    user_stream = users(num_floors)
     avg_arrival_time = 3  # seconds
 
     state = {
@@ -148,19 +156,29 @@ def play() -> SceneFn:
         "complaints": 0,
         "all_users": [],
         "camera": pg.FRect(0, 0, WIDTH, HEIGHT),
+        "num_floors": 10,
     }
+    state["user_stream"] = users(state["num_floors"])
+    state["building_height"] = state["num_floors"] * FLOOR_HEIGHT
+
+    lift = Lift()
+    lift.passengers = [None] * lift.capacity
+    lift.rect.bottom = state["num_floors"] * FLOOR_HEIGHT
+
 
     @lru_cache
     def get_background(screen: pg.Surface) -> pg.Surface:
-        bg = pg.Surface(screen.get_size()).convert()
+        building_height = state["building_height"]
+        num_floors = state["num_floors"]
+        bg = pg.Surface((WIDTH, building_height)).convert()
         bg.fill("black")
         floor_rect = pg.Rect(0, 0, WIDTH, FLOOR_HEIGHT)
         for i in range(num_floors):
             c = pg.Color(0x888888).lerp(pg.Color("black"), i / num_floors)
-            pg.draw.rect(bg, c, floor_rect.move_to(bottom=GROUND - i * FLOOR_HEIGHT))
-            number = pg.Font(None, 20).render(f"{i:d}", True, "white")
-            bg.blit(number, (lift.rect.x - 10, GROUND - (i + 1) * FLOOR_HEIGHT + 5))
-        pg.draw.rect(bg, "black", (lift.rect.x, 0, lift.rect.width, GROUND))
+            pg.draw.rect(bg, c, floor_rect.move_to(bottom=building_height - i * FLOOR_HEIGHT))
+            number = pg.Font(None, 30).render(f"{i:d}", True, "white")
+            bg.blit(number, (lift.rect.x - 10, building_height - (i + 1) * FLOOR_HEIGHT + 5))
+        pg.draw.rect(bg, "black", (lift.rect.x, 0, lift.rect.width, building_height))
         return bg
 
     def _scene(
@@ -175,14 +193,14 @@ def play() -> SceneFn:
         for action in get_actions(events):
             match action:
                 case "pressed_up":
-                    lift.acceleration.y = -800
+                    lift.acceleration.y = -1600
                 case "pressed_down":
-                    lift.acceleration.y = 800
+                    lift.acceleration.y = 1600
 
                 case "mouse_pressed" if pg.mouse.get_pos()[1] < HEIGHT // 2:
-                    lift.acceleration.y = -800
+                    lift.acceleration.y = -1600
                 case "mouse_pressed" if pg.mouse.get_pos()[1] >= HEIGHT // 2:
-                    lift.acceleration.y = 800
+                    lift.acceleration.y = 1600
 
                 case "released_up" | "released_down":
                     lift.acceleration.y = 0
@@ -200,13 +218,13 @@ def play() -> SceneFn:
             lift.velocity.y = lift.max_speed * (1 if lift.velocity.y > 0 else -1)
         lift.velocity *= SPEED_DAMPING
         lift.rect.y += lift.velocity.y * delta_time
-        lift.rect.bottom = min(GROUND, lift.rect.bottom)
-        lift.rect.top = max(lift.rect.top, GROUND - num_floors * FLOOR_HEIGHT)
-        lift_floor = (GROUND - lift.rect.bottom) // FLOOR_HEIGHT
+        lift.rect.bottom = min(state["building_height"], lift.rect.bottom)
+        lift.rect.top = max(lift.rect.top, 0)
+        lift_floor = (state["building_height"] - lift.rect.bottom) // FLOOR_HEIGHT
 
         # snap to floors
         if abs(lift.velocity.y) < MAX_SNAP_SPEED:
-            offset = (GROUND - lift.rect.bottom) % FLOOR_HEIGHT
+            offset = (state["building_height"] - lift.rect.bottom) % FLOOR_HEIGHT
             if abs(FLOOR_HEIGHT // 2 - offset) > SNAP_THRESHOLD:
                 if offset < FLOOR_HEIGHT // 2:
                     lift.rect.bottom += offset
@@ -215,23 +233,24 @@ def play() -> SceneFn:
 
         # update camera to follow lift
         camera.center = pg.Vector2(camera.center).lerp(lift.rect.center, 0.1)
-        camera.bottom = min(camera.bottom, HEIGHT)
+        camera.bottom = min(camera.bottom, state["num_floors"] * FLOOR_HEIGHT)
 
+        screen.fill("black")
         screen.blit(get_background(screen), (0, 0), area=camera)
         pg.draw.rect(screen, "grey", lift.rect.move(0, -camera.top))
 
         # spawn new users
         state["time_until_next_user"] -= delta_time
         if state["time_until_next_user"] <= 0:
-            new_user = next(user_stream)
+            new_user = next(state["user_stream"])
             side = int(new_user.rect.centerx < lift.rect.centerx)
             state["all_users"].append(new_user)
             state["time_until_next_user"] = random.normalvariate(avg_arrival_time)
 
         users_to_remove = []
         for user in state["all_users"]:
-            current_floor = (GROUND - user.rect.bottom) // FLOOR_HEIGHT
-            destination_floor = GROUND - user.destination * FLOOR_HEIGHT
+            current_floor = (state["building_height"] - user.rect.bottom) // FLOOR_HEIGHT
+            destination_floor = state["building_height"] - user.destination * FLOOR_HEIGHT
             at_destination = abs(lift.rect.bottom - destination_floor) < 5
 
             # user has boarded the lift/is leaving
@@ -247,7 +266,7 @@ def play() -> SceneFn:
                     # move the user off the screen
                     offset = user.rect.centerx - lift.rect.centerx
                     direction = 1 if offset > 0 else -1 if offset < 0 else random.choice((-1, 1))
-                    user.rect.x += direction * 50 * delta_time
+                    user.rect.x += direction * USER_SPEED * delta_time
 
                 else:
 
@@ -260,12 +279,12 @@ def play() -> SceneFn:
 
                     if abs(user.rect.centerx - slot_x) > 1:
                         direction = 1 if user.rect.centerx < slot_x else -1
-                        user.rect.x += direction * 50 * delta_time
+                        user.rect.x += direction * USER_SPEED * delta_time
                     else:
                         user.rect.centerx = slot_x
 
                 # if user has left the screen, update score
-                if not screen_rect.contains(user.rect):
+                if not 0 <= user.rect.x <= WIDTH - USER_WIDTH:
                     users_to_remove.append(user)
                     state["served_users"] += 1
 
@@ -273,13 +292,13 @@ def play() -> SceneFn:
             else:
 
                 # ensure the user is on the floor
-                user.rect.bottom = GROUND - current_floor * FLOOR_HEIGHT
+                user.rect.bottom = state["building_height"] - current_floor * FLOOR_HEIGHT
 
                 if user.patience:
 
                     # move towards the lift
                     side = int(user.rect.centerx < lift.rect.centerx)
-                    user.rect.x += [-1, 1][side] * 50 * delta_time
+                    user.rect.x += [-1, 1][side] * USER_SPEED * delta_time
 
                     # # move them to the back of the queue for the side they are on
                     others = [
@@ -339,7 +358,7 @@ def play() -> SceneFn:
 
                     # user has run out of patience, move off screen
                     direction = -1 if user.rect.centerx < lift.rect.centerx else 1
-                    user.rect.x += direction * 100 * delta_time
+                    user.rect.x += direction * USER_ANGRY_SPEED * delta_time
 
                     if not screen_rect.contains(user.rect):
                         users_to_remove.append(user)
@@ -347,7 +366,7 @@ def play() -> SceneFn:
 
             # user color indicates patience level: white -> red
             i = 1 if user.patience > 5 else user.patience / 5
-            pg.draw.rect(screen, (255, int(255 * i), int(255 * i)), user.rect.move(0, -camera.top))
+            # pg.draw.rect(screen, (255, int(255 * i), int(255 * i)), user.rect.move(0, -camera.top))
             screen.blit(user.image, user.rect.move(0, -camera.top))
 
         while users_to_remove:
@@ -356,8 +375,8 @@ def play() -> SceneFn:
         # draw score
         happy = pg.Font(None, 30).render(f"{state['served_users']:04d}", True, "white")
         angry = pg.Font(None, 30).render(f"{state['complaints']:04d}", True, "white")
-        screen.blit(happy, (50, 560))
-        screen.blit(angry, (300, 560))
+        screen.blit(happy, (50, HEIGHT - 80))
+        screen.blit(angry, (700, HEIGHT - 80))
 
     return _scene
 
