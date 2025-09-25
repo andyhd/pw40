@@ -16,6 +16,8 @@ jobs:
 
       - run: pip install -r requirements.txt
 
+      - run: mkdir -p dist && for f in manifest; do cp -r $f dist/; done
+
       - run: python -m pygbag --build $GITHUB_WORKSPACE/dist
 
       - run: tar --directory $GITHUB_WORKSPACE/dist/build/web -cvf "$RUNNER_TEMP/artifact.tar" .
