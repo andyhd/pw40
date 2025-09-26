@@ -20,11 +20,15 @@ Mechanics:
 - users move horizontally towards the lift
 - users board the lift when it arrives at their floor
 - users disembark when the lift reaches their destination floor
-- The lift cannot move while users are boarding or disembarking
 - users have different patience levels
+- users who run out of patience leave and count as complaints
+- score is based on number of users served and number of complaints
+- lift has a maximum capacity
+- lift has acceleration and max speed
+- lift snaps to floors when moving slowly
+- floors are added after a certain number of users are served
+-
 
-- users move towards the lift when it arrives at their floor
-- Building "complete" after a certain number of users served
 """
 
 import random
@@ -38,7 +42,7 @@ import pygame as pg
 
 from utils import SceneFn, asset_loader, bind_controls
 
-WIDTH, HEIGHT = 800, 1200
+WIDTH, HEIGHT = 800, 800
 FLOOR_HEIGHT = 128
 SPEED_DAMPING = 0.9
 MAX_SNAP_SPEED = 100  # max speed to allow snapping to floor
@@ -139,9 +143,7 @@ def users(max_floor: int = 10) -> Generator[User]:
         patience = random.choice(list(PatienceLevel)).value
         side = random.choice((0, 1))
         rect = pg.FRect(SPAWN_X[side], (max_floor - start_floor) * FLOOR_HEIGHT - USER_HEIGHT, USER_WIDTH, USER_HEIGHT)
-        image = assets(f"user{random.choice(range(7)):02d}").convert_alpha()
-        # image = pg.Surface((USER_WIDTH, USER_HEIGHT)).convert_alpha()
-        # image.fill((0, 0, 0, 0))
+        image = assets(f"user{random.choice(range(7)):02d}")
         label = pg.Font(None, 30).render(f"{destination:d}", True, "magenta")
         image.blit(label, (0, 0))
         yield User(start_floor, destination, patience, rect, image=image)
@@ -157,7 +159,7 @@ class GameState:
     lift_start_delay: float = 0.0
     num_floors: int = 8
     served_users: int = 0
-    time_until_next_user: float = 0.0
+    time_to_next_user: float = 0.0
     user_stream: Generator[User] | None = None
 
 
@@ -165,7 +167,7 @@ def play() -> SceneFn:
     avg_arrival_time = 3  # seconds
 
     state = GameState()
-    state.time_until_next_user = random.normalvariate(avg_arrival_time)
+    state.time_to_next_user = random.normalvariate(avg_arrival_time)
     state.user_stream = users(state.num_floors)
     state.building_height = state.num_floors * FLOOR_HEIGHT
 
@@ -173,21 +175,21 @@ def play() -> SceneFn:
     lift.passengers = [None] * lift.capacity
     lift.rect.bottom = state.num_floors * FLOOR_HEIGHT
 
+    arco_font = assets("arco")
+    arco_font.set_point_size(50)
+
     @lru_cache
     def get_background(screen: pg.Surface) -> pg.Surface:
         building_height = state.building_height
         num_floors = state.num_floors
-        bg = pg.Surface((WIDTH, building_height + FLOOR_HEIGHT)).convert()
-        bg.fill("skyblue")
+        bg = pg.Surface((WIDTH, building_height + FLOOR_HEIGHT), pg.SRCALPHA)
+        bg.fill((0, 0, 0, 0))
         rect = pg.Rect(0, 0, WIDTH, FLOOR_HEIGHT)
         for i in range(num_floors):
             floor_rect = rect.move(0, floor_y(i + 1, num_floors))
-            # c = pg.Color(0x888888).lerp(pg.Color("black"), i / num_floors)
-            # pg.draw.rect(bg, c, floor_rect)
-            bg.blit(assets(f"floor{random.choice(range(1)):02d}").convert_alpha(), floor_rect)
+            bg.blit(assets(f"floor{random.choice(range(1)):02d}"), floor_rect)
             number = pg.Font(None, 30).render(f"{i:d}", True, "white")
             bg.blit(number, number.get_rect(right=lift.rect.x - 10, top=floor_rect.top + 10))
-        pg.draw.rect(bg, "black", (lift.rect.x, 0, lift.rect.width, building_height))
         return bg
 
     def _scene(
@@ -221,7 +223,6 @@ def play() -> SceneFn:
                     return main_menu()
 
         lift_was_stopped = abs(lift.velocity.y) < lift.min_speed
-        lift_was_accelerating = lift.acceleration.y != 0
 
         lift.velocity += lift.acceleration * delta_time
         if abs(lift.velocity.y) < lift.min_speed:
@@ -280,18 +281,21 @@ def play() -> SceneFn:
         camera.bottom = min(camera.bottom, state.num_floors * FLOOR_HEIGHT)
 
         screen.fill("skyblue")
+        screen.blit(
+            assets("background"),
+            assets("background").get_rect(bottom=HEIGHT - camera.y // 3)
+        )
         screen.blit(get_background(screen), (0, 0), area=camera)
-        screen.blit(assets("construction"), (0, -FLOOR_HEIGHT - camera.y))
-        # pg.draw.rect(screen, "grey", lift.rect.move(0, -camera.top))
-        screen.blit(assets("lift").convert_alpha(), lift.rect.move(0, -camera.top))
+        # screen.blit(assets("construction"), (0, -FLOOR_HEIGHT - camera.y))
+        screen.blit(assets("lift"), lift.rect.move(0, -camera.top))
 
         # spawn new users
-        state.time_until_next_user -= delta_time
-        if state.time_until_next_user <= 0:
+        state.time_to_next_user -= delta_time
+        if state.time_to_next_user <= 0:
             new_user = next(state.user_stream)
             side = int(new_user.rect.centerx < lift.rect.centerx)
             state.all_users.append(new_user)
-            state.time_until_next_user = random.normalvariate(avg_arrival_time)
+            state.time_to_next_user = random.normalvariate(avg_arrival_time)
 
         users_to_remove = []
         for user in state.all_users:
@@ -418,13 +422,60 @@ def play() -> SceneFn:
         while users_to_remove:
             state.all_users.remove(users_to_remove.pop())
 
+        # draw clock
+        minutes, seconds = divmod(int(shared_state["time_to_next_level"]), 60)
+        shadow = arco_font.render(f"{minutes:02d}:{seconds:02d}", True, "black")
+        for dx, dy in [(-2, 0), (2, 0), (0, -2), (0, 2)]:
+            screen.blit(shadow, shadow.get_rect(centerx=WIDTH // 2 + dx, top=10 + dy))
+        level_time = arco_font.render(f"{minutes:02d}:{seconds:02d}", True, "white")
+        screen.blit(level_time, level_time.get_rect(centerx=WIDTH // 2, top=10))
+
+        shared_state["time_to_next_level"] -= delta_time
+        if shared_state["time_to_next_level"] <= 0:
+            shared_state["served_users"] = state.served_users
+            shared_state["complaints"] = state.complaints
+            shared_state["num_floors"] = state.num_floors + 1
+            get_background.cache_clear()
+            return end_level()
+
         # draw score
+        screen.blit(assets("gauge"), assets("gauge").get_rect(bottom=HEIGHT))
         happy = pg.Font(None, 30).render(f"{state.served_users:04d}", True, "white")
         angry = pg.Font(None, 30).render(f"{state.complaints:04d}", True, "white")
         screen.blit(happy, (50, HEIGHT - 80))
         screen.blit(angry, (700, HEIGHT - 80))
 
     return _scene
+
+
+def end_level() -> SceneFn:
+    def _scene(
+        screen: pg.Surface,
+        events: list[pg.Event],
+        delta_time: float,
+        shared_state: dict,
+    ) -> SceneFn | None:
+        if any(event.type == pg.KEYDOWN and event.key == pg.K_SPACE for event in events):
+            shared_state["level_duration"] += 10.0
+            shared_state["time_to_next_level"] = shared_state["level_duration"]
+            return play()
+
+        screen.fill("blue")
+        screen_rect = screen.get_rect()
+        text = pg.Font(None, 50).render("Level Complete!", True, "white")
+        screen.blit(text, text.get_rect(centerx=screen_rect.centerx, top=100))
+        served = shared_state.get("served_users", 0)
+        total = served + shared_state.get("complaints", 0)
+        if total > 0:
+            star_rating = max(0, min(3, (served // total) * 3))
+            text = pg.Font(None, 30).render(f"You served {served} / {total} users!", True, "white")
+            screen.blit(text, text.get_rect(centerx=screen_rect.centerx, top=200))
+            for i in range(3):
+                rect = assets("star").get_rect(centerx=screen_rect.centerx - 50 + i * 50, top=300)
+                if star_rating >= i + 1:
+                    screen.blit(assets("star"), rect)
+                else:
+                    screen.blit(assets("star_no"), rect)
 
 
 def main_menu() -> SceneFn:
@@ -435,6 +486,11 @@ def main_menu() -> SceneFn:
         shared_state: dict,
     ) -> SceneFn | None:
         if any(event.type == pg.KEYDOWN for event in events):
+            shared_state |= {
+                "level_duration": 90.0,
+                "time_to_next_level": 90.0,
+                "num_floors": 8,
+            }
             return play()
 
         screen.fill("red")

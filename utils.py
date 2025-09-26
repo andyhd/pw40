@@ -1,7 +1,8 @@
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Generator, Hashable
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 import pygame as pg
 
@@ -75,8 +76,9 @@ def asset_loader(path: Path):
             raise LookupError(f"Asset not found: {path / name}")
 
         if load_fn := {
-            **{_: pg.image.load for _ in [".png"]},
+            **{_: lambda path: pg.image.load(path).convert_alpha() for _ in [".png"]},
             **{_: pg.mixer.Sound for _ in [".ogg"]},
+            **{_: lambda path: pg.Font(path, 20) for _ in [".ttf"]},
         }.get(asset_path.suffix.lower()):
             return load_fn(asset_path)
 
@@ -84,3 +86,16 @@ def asset_loader(path: Path):
 
     return get_asset
 
+
+State = Hashable
+Transition = Callable[[Any], State | None]
+
+
+def statemachine(transitions: dict[State, list[Transition]]) -> Generator:
+    state = next(iter(transitions))
+    while state:
+        input_ = yield state
+        for transition in transitions[state]:
+            if next_state := transition(input_):
+                state = next_state
+                break
