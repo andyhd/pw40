@@ -68,7 +68,7 @@ def asset_loader(path: Path):
 
     @lru_cache
     def get_asset(name: str):
-        matching = path.glob(f"{name}*")
+        matching = path.glob(f"{name}.*")
         try:
             asset_path = next(matching)
         except StopIteration:
