@@ -18,7 +18,7 @@ jobs:
 
       - run: mkdir -p dist && for f in $(cat manifest); do cp -r $f dist/; done
 
-      - run: python -m pygbag --build $GITHUB_WORKSPACE/dist
+      - run: python -m pygbag --ume_block 0 --build $GITHUB_WORKSPACE/dist
 
       - run: tar --directory $GITHUB_WORKSPACE/dist/build/web -cvf "$RUNNER_TEMP/artifact.tar" .
 
