@@ -427,13 +427,17 @@ def play() -> SceneFn:
 
             # user color indicates patience level: white -> red
             i = 1 if user.patience > 5 else user.patience / 6
-            cx, cy = user.rect.centerx, user.rect.top - camera.top
+            cx, cy = user.rect.centerx, min(HEIGHT, max(0, user.rect.top - camera.top))
+            ch = 30
+            poly = [(cx - 20, cy), (cx + 20, cy), (cx, cy + ch)]
+            if cy == 0:
+                poly = [(cx - 20, ch), (cx, 0), (cx + 20, ch)]
+            elif cy == HEIGHT:
+                poly = [(cx - 20, HEIGHT - ch), (cx + 20, HEIGHT - ch), (cx, HEIGHT)]
+                cy = HEIGHT - ch
+
             label = pg.Font(None, 30).render(f"{user.destination:d}", True, "black")
-            pg.draw.polygon(
-                screen,
-                (255, int(255 * i), int(255 * i)),
-                [(cx - 20, cy), (cx + 20, cy), (cx, cy + 30)],
-            )
+            pg.draw.polygon(screen, (255, int(255 * i), int(255 * i)), poly)
             screen.blit(label, label.get_rect(midtop=(cx, cy)))
             screen.blit(user.image, user.rect.move(0, -camera.top))
 
