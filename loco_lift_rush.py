@@ -35,7 +35,6 @@ import random
 from collections.abc import Generator
 from dataclasses import dataclass, field
 from enum import Enum
-from functools import lru_cache
 from pathlib import Path
 
 import pygame as pg
@@ -207,7 +206,6 @@ def play() -> SceneFn:
         if not state.level_started:
             start_level(shared_state)
 
-        screen_rect = screen.get_rect()
         camera = state.camera
         lift = state.lift
 
@@ -412,7 +410,10 @@ def play() -> SceneFn:
                         lift.passengers[user.lift_slot] = user
 
                     if user.waiting:
-                        user.patience = max(0, user.patience - delta_time)
+                        if user.patience:
+                            user.patience = max(0, user.patience - delta_time)
+                            if user.patience == 0:
+                                assets(f"huff{random.choice(range(2)):02d}").play()
 
                 else:
 
@@ -479,6 +480,8 @@ def end_level() -> SceneFn:
     arco_font = assets("arco")
     arco_font.set_point_size(50)
 
+    state = {"applauded": False}
+
     def _scene(
         screen: pg.Surface,
         events: list[pg.Event],
@@ -497,6 +500,9 @@ def end_level() -> SceneFn:
         if total > 0:
             star_rating = max(0, min(3, round((served / total) * 3)))
             screen.fill("blue" if star_rating else "darkred")
+            if star_rating == 3 and not state["applauded"]:
+                assets("applause").play()
+                state["applauded"] = True
             outline_text(
                 screen,
                 "Level Complete!",
@@ -512,6 +518,9 @@ def end_level() -> SceneFn:
                     screen.blit(assets("star"), rect)
                 else:
                     screen.blit(assets("star_no"), rect)
+
+        text = pg.Font(None, 30).render("Press SPACE to continue", True, "white")
+        screen.blit(text, text.get_rect(centerx=screen_rect.centerx, bottom=screen_rect.bottom - 50))
 
     return _scene
 
