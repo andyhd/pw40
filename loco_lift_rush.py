@@ -47,7 +47,7 @@ FLOOR_HEIGHT = 128
 SPEED_DAMPING = 0.9
 MAX_SNAP_SPEED = 100  # max speed to allow snapping to floor
 SNAP_THRESHOLD = 50  # pixels from floor to snap
-USER_WIDTH, USER_HEIGHT = 32, FLOOR_HEIGHT
+USER_WIDTH, USER_HEIGHT = 64, FLOOR_HEIGHT
 LIFT_WIDTH, LIFT_HEIGHT = 100, FLOOR_HEIGHT
 SPAWN_X = [-USER_WIDTH, WIDTH]
 USER_SPEED = 100
@@ -143,9 +143,15 @@ def users(max_floor: int = 10) -> Generator[User]:
         patience = random.choice(list(PatienceLevel)).value
         side = random.choice((0, 1))
         rect = pg.FRect(SPAWN_X[side], (max_floor - start_floor) * FLOOR_HEIGHT - USER_HEIGHT, USER_WIDTH, USER_HEIGHT)
-        image = assets(f"user{random.choice(range(7)):02d}")
-        label = pg.Font(None, 30).render(f"{destination:d}", True, "magenta")
-        image.blit(label, (0, 0))
+        image = assets(f"user{random.choice(range(7)):02d}").copy()
+        cx = image.get_rect().centerx
+        label = pg.Font(None, 30).render(f"{destination:d}", True, "black")
+        pg.draw.polygon(
+            image,
+            ("yellow" if patience > 10 else "orange" if patience > 5 else "red"),
+            [(cx - 20, 0), (cx + 20, 0), (cx, 30)],
+        )
+        image.blit(label, label.get_rect(centerx=image.get_rect().centerx))
         yield User(start_floor, destination, patience, rect, image=image)
 
 
@@ -416,8 +422,10 @@ def play() -> SceneFn:
 
             # user color indicates patience level: white -> red
             i = 1 if user.patience > 5 else user.patience / 5
-            # pg.draw.rect(screen, (255, int(255 * i), int(255 * i)), user.rect.move(0, -camera.top))
             screen.blit(user.image, user.rect.move(0, -camera.top))
+            # pg.draw.rect(screen, (255, int(255 * i), int(255 * i)), user.rect.move(0, -camera.top))
+
+
 
         while users_to_remove:
             state.all_users.remove(users_to_remove.pop())
@@ -476,8 +484,8 @@ def end_level() -> SceneFn:
             shared_state["time_to_next_level"] = shared_state["level_duration"]
             return play()
 
-        served = 0 or shared_state.get("served_users", 0)
-        total = 5 or served + shared_state.get("complaints", 0)
+        served = shared_state.get("served_users", 0)
+        total = served + shared_state.get("complaints", 0)
         if total > 0:
             star_rating = max(0, min(3, round((served / total) * 3)))
             screen.fill("blue" if star_rating else "darkred")
