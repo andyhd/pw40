@@ -423,12 +423,8 @@ def play() -> SceneFn:
             state.all_users.remove(users_to_remove.pop())
 
         # draw clock
-        minutes, seconds = divmod(int(shared_state["time_to_next_level"]), 60)
-        shadow = arco_font.render(f"{minutes:02d}:{seconds:02d}", True, "black")
-        for dx, dy in [(-2, 0), (2, 0), (0, -2), (0, 2)]:
-            screen.blit(shadow, shadow.get_rect(centerx=WIDTH // 2 + dx, top=10 + dy))
-        level_time = arco_font.render(f"{minutes:02d}:{seconds:02d}", True, "white")
-        screen.blit(level_time, level_time.get_rect(centerx=WIDTH // 2, top=10))
+        time = "{0:02d}:{1:02d}".format(*divmod(int(shared_state["time_to_next_level"]), 60))
+        outline_text(screen, time, arco_font, "white", move_to={"centerx": WIDTH // 2, "top": 10})
 
         shared_state["time_to_next_level"] -= delta_time
         if shared_state["time_to_next_level"] <= 0:
@@ -440,34 +436,58 @@ def play() -> SceneFn:
 
         # draw score
         screen.blit(assets("gauge"), assets("gauge").get_rect(bottom=HEIGHT))
-        happy = pg.Font(None, 30).render(f"{state.served_users:04d}", True, "white")
-        angry = pg.Font(None, 30).render(f"{state.complaints:04d}", True, "white")
-        screen.blit(happy, (50, HEIGHT - 80))
-        screen.blit(angry, (700, HEIGHT - 80))
+        outline_text(screen, f"{state.served_users:04d}", arco_font, "white", move_to={"left": 180, "bottom": HEIGHT - 20})
+        outline_text(screen, f"{state.complaints:04d}", arco_font, "white", move_to={"right": 620, "bottom": HEIGHT - 20})
 
     return _scene
 
 
+def outline_text(
+    surface: pg.Surface,
+    text: str,
+    font: pg.Font,
+    text_color: str,
+    move_to: dict = {},
+    outline_color: str = "black",
+    outline_width: int = 2
+) -> None:
+    text_img = font.render(text, True, text_color)
+    rect = text_img.get_rect(**move_to)
+    shadow = font.render(text, True, outline_color)
+    for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        surface.blit(shadow, rect.move(dx * outline_width, dy * outline_width))
+    surface.blit(text_img, rect)
+
+
 def end_level() -> SceneFn:
+    arco_font = assets("arco")
+    arco_font.set_point_size(50)
+
     def _scene(
         screen: pg.Surface,
         events: list[pg.Event],
         delta_time: float,
         shared_state: dict,
     ) -> SceneFn | None:
+        screen_rect = screen.get_rect()
+
         if any(event.type == pg.KEYDOWN and event.key == pg.K_SPACE for event in events):
             shared_state["level_duration"] += 10.0
             shared_state["time_to_next_level"] = shared_state["level_duration"]
             return play()
 
-        screen.fill("blue")
-        screen_rect = screen.get_rect()
-        text = pg.Font(None, 50).render("Level Complete!", True, "white")
-        screen.blit(text, text.get_rect(centerx=screen_rect.centerx, top=100))
-        served = shared_state.get("served_users", 0)
-        total = served + shared_state.get("complaints", 0)
+        served = 0 or shared_state.get("served_users", 0)
+        total = 5 or served + shared_state.get("complaints", 0)
         if total > 0:
-            star_rating = max(0, min(3, (served // total) * 3))
+            star_rating = max(0, min(3, round((served / total) * 3)))
+            screen.fill("blue" if star_rating else "darkred")
+            outline_text(
+                screen,
+                "Level Complete!",
+                arco_font,
+                "white",
+                move_to={"centerx": screen_rect.centerx, "top": 100}
+            )
             text = pg.Font(None, 30).render(f"You served {served} / {total} users!", True, "white")
             screen.blit(text, text.get_rect(centerx=screen_rect.centerx, top=200))
             for i in range(3):
@@ -476,6 +496,8 @@ def end_level() -> SceneFn:
                     screen.blit(assets("star"), rect)
                 else:
                     screen.blit(assets("star_no"), rect)
+
+    return _scene
 
 
 def main_menu() -> SceneFn:
@@ -493,6 +515,8 @@ def main_menu() -> SceneFn:
             }
             return play()
 
-        screen.fill("red")
+        screen.blit(assets("title"))
+        text = pg.Font(None, 40).render("Press any key to start", True, "white")
+        screen.blit(text, text.get_rect(centerx=WIDTH // 2, bottom=HEIGHT - 50))
 
     return _scene
