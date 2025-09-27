@@ -1,36 +1,3 @@
-"""
-Loco Lift Rush
-
-You are a lift operator in a busy skyscraper. Your job is to move the
-lift up and down to pick up and drop off users as quickly as possible.
-Use the arrow keys to control the lift.
-
-A stream of users will call the lift at various floors. You must stop to let
-them in and out. The users will get impatient if you take too long, so be
-quick!
-
-Controls:
-- Up Arrow: Move lift up
-- Down Arrow: Move lift down
-- Escape: Exit game
-
-Mechanics:
-- users continuously arrive to call the lift at random intervals
-- users spawn at the left or right (random) side of the screen
-- users move horizontally towards the lift
-- users board the lift when it arrives at their floor
-- users disembark when the lift reaches their destination floor
-- users have different patience levels
-- users who run out of patience leave and count as complaints
-- score is based on number of users served and number of complaints
-- lift has a maximum capacity
-- lift has acceleration and max speed
-- lift snaps to floors when moving slowly
-- floors are added after a certain number of users are served
--
-
-"""
-
 import random
 from collections.abc import Generator
 from dataclasses import dataclass, field
@@ -494,10 +461,14 @@ def end_level() -> SceneFn:
     ) -> SceneFn | None:
         screen_rect = screen.get_rect()
 
-        if any(event.type == pg.KEYDOWN and event.key == pg.K_SPACE for event in events):
-            shared_state["level_duration"] += 10.0
-            shared_state["time_to_next_level"] = shared_state["level_duration"]
-            return play()
+        for event in events:
+            if (
+                (event.type == pg.KEYDOWN and event.key == pg.K_SPACE)
+                or event.type == pg.MOUSEBUTTONDOWN
+            ):
+                shared_state["level_duration"] += 10.0
+                shared_state["time_to_next_level"] = shared_state["level_duration"]
+                return play()
 
         served = shared_state.get("served_users", 0)
         total = served + shared_state.get("complaints", 0)
@@ -523,7 +494,7 @@ def end_level() -> SceneFn:
                 else:
                     screen.blit(assets("star_no"), rect)
 
-        text = pg.Font(None, 30).render("Press SPACE to continue", True, "white")
+        text = pg.Font(None, 30).render("Click or press SPACE to continue", True, "white")
         screen.blit(text, text.get_rect(centerx=screen_rect.centerx, bottom=screen_rect.bottom - 50))
 
     return _scene
@@ -536,16 +507,17 @@ def main_menu() -> SceneFn:
         delta_time: float,
         shared_state: dict,
     ) -> SceneFn | None:
-        if any(event.type == pg.KEYDOWN for event in events):
-            shared_state |= {
-                "level_duration": 90.0,
-                "time_to_next_level": 90.0,
-                "num_floors": 10,
-            }
-            return play()
+        for event in events:
+            if event.type == pg.KEYDOWN or event.type == pg.MOUSEBUTTONDOWN:
+                shared_state |= {
+                    "level_duration": 180.0,
+                    "time_to_next_level": 180.0,
+                    "num_floors": 10,
+                }
+                return play()
 
-        screen.blit(assets("title"))
-        text = pg.Font(None, 40).render("Press any key to start", True, "white")
+        screen.blit(assets("title"), (0, 0))
+        text = pg.Font(None, 40).render("Click or press any key to start", True, "white")
         screen.blit(text, text.get_rect(centerx=WIDTH // 2, bottom=HEIGHT - 50))
 
     return _scene
