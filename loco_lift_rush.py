@@ -144,23 +144,17 @@ def users(max_floor: int = 10) -> Generator[User]:
         side = random.choice((0, 1))
         rect = pg.FRect(SPAWN_X[side], (max_floor - start_floor) * FLOOR_HEIGHT - USER_HEIGHT, USER_WIDTH, USER_HEIGHT)
         image = assets(f"user{random.choice(range(7)):02d}").copy()
-        cx = image.get_rect().centerx
-        label = pg.Font(None, 30).render(f"{destination:d}", True, "black")
-        pg.draw.polygon(
-            image,
-            ("yellow" if patience > 10 else "orange" if patience > 5 else "red"),
-            [(cx - 20, 0), (cx + 20, 0), (cx, 30)],
-        )
-        image.blit(label, label.get_rect(centerx=image.get_rect().centerx))
         yield User(start_floor, destination, patience, rect, image=image)
 
 
 @dataclass(kw_only=True)
 class GameState:
     all_users: list[User] = field(default_factory=list)
+    background: pg.Surface | None = None
     building_height: int = 0
     camera: pg.FRect = field(default_factory=lambda: pg.FRect(0, 0, WIDTH, HEIGHT))
     complaints: int = 0
+    level_started: bool = False
     lift_sound: pg.mixer.Sound | None = None
     lift_start_delay: float = 0.0
     num_floors: int = 8
@@ -170,23 +164,27 @@ class GameState:
 
 
 def play() -> SceneFn:
-    avg_arrival_time = 3  # seconds
-
-    state = GameState()
-    state.time_to_next_user = random.normalvariate(avg_arrival_time)
-    state.user_stream = users(state.num_floors)
-    state.building_height = state.num_floors * FLOOR_HEIGHT
-
-    lift = Lift()
-    lift.passengers = [None] * lift.capacity
-    lift.rect.bottom = state.num_floors * FLOOR_HEIGHT
 
     arco_font = assets("arco")
     arco_font.set_point_size(50)
 
-    @lru_cache
-    def get_background(screen: pg.Surface) -> pg.Surface:
-        building_height = state.building_height
+    state = GameState()
+
+    def start_level(shared_state: dict):
+        if state.level_started:
+            return
+
+        state.avg_arrival_time = 3  # seconds
+
+        state.num_floors = shared_state.get("num_floors", 8)
+        state.time_to_next_user = random.normalvariate(state.avg_arrival_time)
+        state.user_stream = users(state.num_floors)
+        state.building_height = building_height = state.num_floors * FLOOR_HEIGHT
+
+        state.lift = lift = Lift()
+        lift.passengers = [None] * lift.capacity
+        lift.rect.bottom = state.num_floors * FLOOR_HEIGHT
+
         num_floors = state.num_floors
         bg = pg.Surface((WIDTH, building_height + FLOOR_HEIGHT), pg.SRCALPHA)
         bg.fill((0, 0, 0, 0))
@@ -196,7 +194,9 @@ def play() -> SceneFn:
             bg.blit(assets(f"floor{random.choice(range(1)):02d}"), floor_rect)
             number = pg.Font(None, 30).render(f"{i:d}", True, "white")
             bg.blit(number, number.get_rect(right=lift.rect.x - 10, top=floor_rect.top + 10))
-        return bg
+        state.background = bg
+
+        state.level_started = True
 
     def _scene(
         screen: pg.Surface,
@@ -204,8 +204,12 @@ def play() -> SceneFn:
         delta_time: float,
         shared_state: dict,
     ) -> SceneFn | None:
+        if not state.level_started:
+            start_level(shared_state)
+
         screen_rect = screen.get_rect()
         camera = state.camera
+        lift = state.lift
 
         for action in get_actions(events):
             match action:
@@ -291,7 +295,7 @@ def play() -> SceneFn:
             assets("background"),
             assets("background").get_rect(bottom=HEIGHT - camera.y // 3)
         )
-        screen.blit(get_background(screen), (0, 0), area=camera)
+        screen.blit(state.background, (0, 0), area=camera)
         # screen.blit(assets("construction"), (0, -FLOOR_HEIGHT - camera.y))
         screen.blit(assets("lift"), lift.rect.move(0, -camera.top))
 
@@ -301,7 +305,7 @@ def play() -> SceneFn:
             new_user = next(state.user_stream)
             side = int(new_user.rect.centerx < lift.rect.centerx)
             state.all_users.append(new_user)
-            state.time_to_next_user = random.normalvariate(avg_arrival_time)
+            state.time_to_next_user = random.normalvariate(state.avg_arrival_time)
 
         users_to_remove = []
         for user in state.all_users:
@@ -416,16 +420,21 @@ def play() -> SceneFn:
                     direction = -1 if user.rect.centerx < lift.rect.centerx else 1
                     user.rect.x += direction * USER_ANGRY_SPEED * delta_time
 
-                    if not screen_rect.contains(user.rect):
+                    if not -USER_WIDTH < user.rect.centerx < WIDTH + USER_WIDTH:
                         users_to_remove.append(user)
                         state.complaints += 1
 
             # user color indicates patience level: white -> red
-            i = 1 if user.patience > 5 else user.patience / 5
+            i = 1 if user.patience > 5 else user.patience / 6
+            cx, cy = user.rect.centerx, user.rect.top - camera.top
+            label = pg.Font(None, 30).render(f"{user.destination:d}", True, "black")
+            pg.draw.polygon(
+                screen,
+                (255, int(255 * i), int(255 * i)),
+                [(cx - 20, cy), (cx + 20, cy), (cx, cy + 30)],
+            )
+            screen.blit(label, label.get_rect(midtop=(cx, cy)))
             screen.blit(user.image, user.rect.move(0, -camera.top))
-            # pg.draw.rect(screen, (255, int(255 * i), int(255 * i)), user.rect.move(0, -camera.top))
-
-
 
         while users_to_remove:
             state.all_users.remove(users_to_remove.pop())
@@ -439,7 +448,6 @@ def play() -> SceneFn:
             shared_state["served_users"] = state.served_users
             shared_state["complaints"] = state.complaints
             shared_state["num_floors"] = state.num_floors + 1
-            get_background.cache_clear()
             return end_level()
 
         # draw score
@@ -519,7 +527,7 @@ def main_menu() -> SceneFn:
             shared_state |= {
                 "level_duration": 90.0,
                 "time_to_next_level": 90.0,
-                "num_floors": 8,
+                "num_floors": 10,
             }
             return play()
 
