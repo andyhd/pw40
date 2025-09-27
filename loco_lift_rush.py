@@ -190,7 +190,7 @@ def play() -> SceneFn:
         rect = pg.Rect(0, 0, WIDTH, FLOOR_HEIGHT)
         for i in range(num_floors):
             floor_rect = rect.move(0, floor_y(i + 1, num_floors))
-            bg.blit(assets(f"floor{random.choice(range(1)):02d}"), floor_rect)
+            bg.blit(assets(f"floor{random.choice(range(4)):02d}"), floor_rect)
             number = pg.Font(None, 30).render(f"{i:d}", True, "white")
             bg.blit(number, number.get_rect(right=lift.rect.x - 10, top=floor_rect.top + 10))
         state.background = bg
