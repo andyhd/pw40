@@ -27,6 +27,7 @@ async def game(
     clock = pg.time.Clock()
     current_scene = initial_scene
     shared_state = {
+        "clock": clock,
         "running": True,
     }
 
@@ -67,6 +68,10 @@ def asset_loader(path: Path):
     if not path.is_dir():
         raise ValueError(f"Path does not exist: {path}")
 
+    def load_font(path: Path):
+        pg.font.init()
+        return pg.Font(path, 20)
+
     @lru_cache
     def get_asset(name: str):
         matching = path.glob(f"{name}.*")
@@ -78,7 +83,7 @@ def asset_loader(path: Path):
         if load_fn := {
             **{_: lambda path: pg.image.load(path).convert_alpha() for _ in [".png"]},
             **{_: pg.mixer.Sound for _ in [".ogg"]},
-            **{_: lambda path: pg.Font(path, 20) for _ in [".ttf"]},
+            **{_: load_font for _ in [".ttf"]},
         }.get(asset_path.suffix.lower()):
             return load_fn(asset_path)
 

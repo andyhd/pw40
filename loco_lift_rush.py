@@ -33,6 +33,8 @@ get_actions = bind_controls(
 )
 
 assets = asset_loader(Path(__file__).parent / "assets")
+arco_font = assets("arco")
+arco_font.set_point_size(50)
 
 
 class PatienceLevel(Enum):
@@ -83,6 +85,8 @@ class Lift:
     """The users currently on the lift."""
     capacity: int = 4
     """The maximum number of users the lift can hold."""
+    was_stopped: bool = True
+    """The lift was stopped on the last frame."""
 
 
 def floor_y(i: int, num_floors: int) -> int:
@@ -116,25 +120,286 @@ def users(max_floor: int = 10) -> Generator[User]:
 @dataclass(kw_only=True)
 class GameState:
     all_users: list[User] = field(default_factory=list)
+    applauded: bool = False
     background: pg.Surface | None = None
     building_height: int = 0
     camera: pg.FRect = field(default_factory=lambda: pg.FRect(0, 0, WIDTH, HEIGHT))
     complaints: int = 0
+    delta_time: float = 0.0
+    events: list[pg.Event] = field(default_factory=list)
+    level_duration: float = 180.0
     level_started: bool = False
     lift_sound: pg.mixer.Sound | None = None
     lift_start_delay: float = 0.0
     num_floors: int = 8
+    screen: pg.Surface | None = None
     served_users: int = 0
+    time_to_next_level: float = 180.0
     time_to_next_user: float = 0.0
     user_stream: Generator[User] | None = None
 
+state = GameState()
+
+
+def control_lift():
+    lift = state.lift
+
+    for action in get_actions(state.events):
+        match action:
+            case "pressed_up":
+                lift.acceleration.y = -LIFT_ACCELERATION
+            case "pressed_down":
+                lift.acceleration.y = LIFT_ACCELERATION
+
+            case "mouse_pressed" if pg.mouse.get_pos()[1] < HEIGHT // 2:
+                lift.acceleration.y = -LIFT_ACCELERATION
+            case "mouse_pressed" if pg.mouse.get_pos()[1] >= HEIGHT // 2:
+                lift.acceleration.y = LIFT_ACCELERATION
+
+            case "released_up" | "released_down":
+                lift.acceleration.y = 0
+
+            case "mouse_released":
+                lift.acceleration.y = 0
+
+            case "exit":
+                return main_menu()
+
+
+def move_lift():
+    lift = state.lift
+    delta_time = state.delta_time
+
+    lift.was_stopped = abs(lift.velocity.y) < lift.min_speed
+
+    lift.velocity += lift.acceleration * delta_time
+    if abs(lift.velocity.y) < lift.min_speed:
+        lift.velocity.y = 0
+    if abs(lift.velocity.y) > lift.max_speed:
+        lift.velocity.y = lift.max_speed * (1 if lift.velocity.y > 0 else -1)
+    lift.velocity *= SPEED_DAMPING
+    lift.rect.y += lift.velocity.y * delta_time
+    lift.rect.bottom = min(state.building_height, lift.rect.bottom)
+    lift.rect.top = max(lift.rect.top, 0)
+    lift.floor = (state.building_height - lift.rect.bottom) // FLOOR_HEIGHT
+
+    # snap to floors
+    if abs(lift.velocity.y) < MAX_SNAP_SPEED:
+        offset = (state.building_height - lift.rect.bottom) % FLOOR_HEIGHT
+        if abs(FLOOR_HEIGHT // 2 - offset) > SNAP_THRESHOLD:
+            if offset < FLOOR_HEIGHT // 2:
+                lift.rect.bottom += offset
+            else:
+                lift.rect.bottom -= (FLOOR_HEIGHT - offset)
+
+
+def play_lift_sfx():
+    delta_time = state.delta_time
+    lift = state.lift
+
+    if abs(lift.velocity.y) <= 0:
+        return
+
+    # starting
+    if lift.was_stopped:
+        if state.lift_sound:
+            state.lift_sound.stop()
+        state.lift_sound = assets("lift_start")
+        state.lift_sound.play()
+        state.lift_start_delay = state.lift_sound.get_length()
+        return
+
+    # stopping
+    if lift.acceleration.y == 0:
+        if state.lift_sound != assets("lift_stop"):
+            if state.lift_sound:
+                state.lift_sound.stop()
+            state.lift_sound = assets("lift_stop")
+            state.lift_sound.play()
+
+    # moving
+    elif state.lift_start_delay <= 0:
+        if state.lift_sound != assets("lift_moving"):
+            if state.lift_sound:
+                state.lift_sound.stop()
+            state.lift_sound = assets("lift_moving")
+            state.lift_sound.play(-1)
+
+    # wait until start sound is done
+    else:
+        state.lift_start_delay -= delta_time
+
+
+def move_camera():
+    camera = state.camera
+    lift = state.lift
+
+    camera.center = pg.Vector2(camera.center).lerp(lift.rect.center, 0.1)
+    camera.bottom = min(camera.bottom, state.num_floors * FLOOR_HEIGHT)
+
+
+def spawn_users():
+    state.time_to_next_user -= state.delta_time
+    if state.time_to_next_user <= 0:
+        new_user = next(state.user_stream)
+        state.all_users.append(new_user)
+        state.time_to_next_user = random.normalvariate(state.avg_arrival_time)
+
+
+def move_users():
+    camera = state.camera
+    delta_time = state.delta_time
+    lift = state.lift
+    screen = state.screen
+
+    users_to_remove = []
+    for user in state.all_users:
+        current_floor = (state.building_height - user.rect.bottom) // FLOOR_HEIGHT
+        destination_floor = state.building_height - user.destination * FLOOR_HEIGHT
+        at_destination = abs(lift.rect.bottom - destination_floor) < 5
+
+        # user has boarded the lift/is leaving
+        if user.lift_slot is not None:
+
+            lift_is_stopped = abs(lift.velocity.y) < 5
+            user.satisfied |= at_destination and lift_is_stopped
+
+            if user.satisfied:
+                if lift.passengers[user.lift_slot] is user:
+                    lift.passengers[user.lift_slot] = None
+
+                # move the user off the screen
+                offset = user.rect.centerx - lift.rect.centerx
+                direction = 1 if offset > 0 else -1 if offset < 0 else random.choice((-1, 1))
+                user.rect.x += direction * USER_SPEED * delta_time
+
+            else:
+
+                # ensure the user is on the lift
+                user.rect.bottom = lift.rect.bottom
+
+                # move to their lift slot
+                slot_width = (lift.rect.width - 16) // lift.capacity
+                slot_x = lift.rect.x + 8 + user.lift_slot * slot_width + slot_width // 2
+
+                if abs(user.rect.centerx - slot_x) > 1:
+                    direction = 1 if user.rect.centerx < slot_x else -1
+                    user.rect.x += direction * USER_SPEED * delta_time
+                else:
+                    user.rect.centerx = slot_x
+
+            # if user has left the screen, update score
+            if not 0 <= user.rect.x <= WIDTH - USER_WIDTH:
+                users_to_remove.append(user)
+                state.served_users += 1
+
+        # user is arriving/waiting for the lift
+        else:
+
+            # ensure the user is on the floor
+            user.rect.bottom = state.building_height - current_floor * FLOOR_HEIGHT
+
+            if user.patience:
+
+                # move towards the lift
+                side = int(user.rect.centerx < lift.rect.centerx)
+                user.rect.x += [-1, 1][side] * USER_SPEED * delta_time
+
+                # # move them to the back of the queue for the side they are on
+                others = [
+                    other for other in state.all_users
+                    if (
+                        other.lift_slot is None
+                        and other.floor == user.floor
+                        and other != user
+                        and other.patience > 0
+                    )
+                ]
+                if user.rect.centerx < lift.rect.centerx:
+                    end_of_queue = min(
+                        lift.rect.right,
+                        *(
+                            other.rect.left for other in others
+                            if user.rect.right < other.rect.left < lift.rect.left
+                        ),
+                        WIDTH,
+                    )
+                    if end_of_queue <= user.rect.right + 5:
+                        user.rect.right = end_of_queue - 5
+                        user.waiting = True
+                else:
+                    end_of_queue = max(
+                        lift.rect.left,
+                        *(
+                            other.rect.right for other in others
+                            if user.rect.left > other.rect.right > lift.rect.right
+                        ),
+                        0,
+                    )
+                    if end_of_queue >= user.rect.left - 5:
+                        user.rect.left = end_of_queue + 5
+                        user.waiting = True
+
+                # if the lift is not on their floor or full, don't let them board
+                if lift.floor != user.floor or all(lift.passengers):
+                    if side:
+                        user.rect.right = min(user.rect.right, lift.rect.left - 5)
+                    else:
+                        user.rect.left = max(user.rect.left, lift.rect.right + 5)
+
+                # board the lift if it is on their floor
+                elif lift.rect.left <= user.rect.centerx <= lift.rect.right:
+                    slots = set(range(lift.capacity))
+                    occupied = {i for i, p in enumerate(lift.passengers) if p}
+                    available = slots - occupied
+                    user.lift_slot = random.choice(list(available))
+                    user.rect.bottom = lift.rect.bottom
+                    lift.passengers[user.lift_slot] = user
+
+                if user.waiting:
+                    if user.patience:
+                        user.patience = max(0, user.patience - delta_time)
+                        if user.patience == 0:
+                            assets(f"huff{random.choice(range(2)):02d}").play()
+
+            else:
+
+                # user has run out of patience, move off screen
+                direction = -1 if user.rect.centerx < lift.rect.centerx else 1
+                user.rect.x += direction * USER_ANGRY_SPEED * delta_time
+
+                if not -USER_WIDTH < user.rect.centerx < WIDTH + USER_WIDTH:
+                    users_to_remove.append(user)
+                    state.complaints += 1
+
+        # user color indicates patience level: white -> red
+        i = 1 if user.patience > 5 else user.patience / 6
+        cx, cy = user.rect.centerx, min(HEIGHT, max(0, user.rect.top - camera.top))
+        ch = 30
+        poly = [(cx - 20, cy), (cx + 20, cy), (cx, cy + ch)]
+        if cy == 0:
+            poly = [(cx - 20, ch), (cx, 0), (cx + 20, ch)]
+        elif cy == HEIGHT:
+            poly = [(cx - 20, HEIGHT - ch), (cx + 20, HEIGHT - ch), (cx, HEIGHT)]
+            cy = HEIGHT - ch
+
+        label = pg.Font(None, 30).render(f"{user.destination:d}", True, "black")
+        pg.draw.polygon(screen, (255, int(255 * i), int(255 * i)), poly)
+        screen.blit(label, label.get_rect(midtop=(cx, cy)))
+        screen.blit(user.image, user.rect.move(0, -camera.top))
+
+    while users_to_remove:
+        state.all_users.remove(users_to_remove.pop())
+
+
+def draw_clock():
+    screen = state.screen
+
+    time = "{0:02d}:{1:02d}".format(*divmod(int(state.time_to_next_level), 60))
+    outline_text(screen, time, arco_font, "white", move_to={"centerx": WIDTH // 2, "top": 10})
+
 
 def play() -> SceneFn:
-
-    arco_font = assets("arco")
-    arco_font.set_point_size(50)
-
-    state = GameState()
 
     def start_level(shared_state: dict):
         if state.level_started:
@@ -173,87 +438,19 @@ def play() -> SceneFn:
         if not state.level_started:
             start_level(shared_state)
 
+        state.events = events
+        state.delta_time = delta_time
+        state.screen = screen
         camera = state.camera
         lift = state.lift
 
-        for action in get_actions(events):
-            match action:
-                case "pressed_up":
-                    lift.acceleration.y = -LIFT_ACCELERATION
-                case "pressed_down":
-                    lift.acceleration.y = LIFT_ACCELERATION
+        control_lift()
 
-                case "mouse_pressed" if pg.mouse.get_pos()[1] < HEIGHT // 2:
-                    lift.acceleration.y = -LIFT_ACCELERATION
-                case "mouse_pressed" if pg.mouse.get_pos()[1] >= HEIGHT // 2:
-                    lift.acceleration.y = LIFT_ACCELERATION
+        move_lift()
 
-                case "released_up" | "released_down":
-                    lift.acceleration.y = 0
+        play_lift_sfx()
 
-                case "mouse_released":
-                    lift.acceleration.y = 0
-
-                case "exit":
-                    return main_menu()
-
-        lift_was_stopped = abs(lift.velocity.y) < lift.min_speed
-
-        lift.velocity += lift.acceleration * delta_time
-        if abs(lift.velocity.y) < lift.min_speed:
-            lift.velocity.y = 0
-        if abs(lift.velocity.y) > lift.max_speed:
-            lift.velocity.y = lift.max_speed * (1 if lift.velocity.y > 0 else -1)
-        lift.velocity *= SPEED_DAMPING
-        lift.rect.y += lift.velocity.y * delta_time
-        lift.rect.bottom = min(state.building_height, lift.rect.bottom)
-        lift.rect.top = max(lift.rect.top, 0)
-        lift_floor = (state.building_height - lift.rect.bottom) // FLOOR_HEIGHT
-
-        # snap to floors
-        if abs(lift.velocity.y) < MAX_SNAP_SPEED:
-            offset = (state.building_height - lift.rect.bottom) % FLOOR_HEIGHT
-            if abs(FLOOR_HEIGHT // 2 - offset) > SNAP_THRESHOLD:
-                if offset < FLOOR_HEIGHT // 2:
-                    lift.rect.bottom += offset
-                else:
-                    lift.rect.bottom -= (FLOOR_HEIGHT - offset)
-
-        # play lift sounds
-        if abs(lift.velocity.y) > 0:
-
-            # starting
-            if lift_was_stopped:
-                if state.lift_sound:
-                    state.lift_sound.stop()
-                state.lift_sound = assets("lift_start")
-                state.lift_sound.play()
-                state.lift_start_delay = state.lift_sound.get_length()
-
-            else:
-                # stopping
-                if lift.acceleration.y == 0:
-                    if state.lift_sound != assets("lift_stop"):
-                        if state.lift_sound:
-                            state.lift_sound.stop()
-                        state.lift_sound = assets("lift_stop")
-                        state.lift_sound.play()
-
-                # moving
-                elif state.lift_start_delay <= 0:
-                    if state.lift_sound != assets("lift_moving"):
-                        if state.lift_sound:
-                            state.lift_sound.stop()
-                        state.lift_sound = assets("lift_moving")
-                        state.lift_sound.play(-1)
-
-                # wait until start sound is done
-                else:
-                    state.lift_start_delay -= delta_time
-
-        # update camera to follow lift
-        camera.center = pg.Vector2(camera.center).lerp(lift.rect.center, 0.1)
-        camera.bottom = min(camera.bottom, state.num_floors * FLOOR_HEIGHT)
+        move_camera()
 
         screen.fill("skyblue")
         screen.blit(
@@ -264,168 +461,15 @@ def play() -> SceneFn:
         # screen.blit(assets("construction"), (0, -FLOOR_HEIGHT - camera.y))
         screen.blit(assets("lift"), lift.rect.move(0, -camera.top))
 
-        # spawn new users
-        state.time_to_next_user -= delta_time
-        if state.time_to_next_user <= 0:
-            new_user = next(state.user_stream)
-            side = int(new_user.rect.centerx < lift.rect.centerx)
-            state.all_users.append(new_user)
-            state.time_to_next_user = random.normalvariate(state.avg_arrival_time)
+        spawn_users()
 
-        users_to_remove = []
-        for user in state.all_users:
-            current_floor = (state.building_height - user.rect.bottom) // FLOOR_HEIGHT
-            destination_floor = state.building_height - user.destination * FLOOR_HEIGHT
-            at_destination = abs(lift.rect.bottom - destination_floor) < 5
+        move_users()
 
-            # user has boarded the lift/is leaving
-            if user.lift_slot is not None:
+        draw_clock()
 
-                lift_is_stopped = abs(lift.velocity.y) < 5
-                user.satisfied |= at_destination and lift_is_stopped
-
-                if user.satisfied:
-                    if lift.passengers[user.lift_slot] is user:
-                        lift.passengers[user.lift_slot] = None
-
-                    # move the user off the screen
-                    offset = user.rect.centerx - lift.rect.centerx
-                    direction = 1 if offset > 0 else -1 if offset < 0 else random.choice((-1, 1))
-                    user.rect.x += direction * USER_SPEED * delta_time
-
-                else:
-
-                    # ensure the user is on the lift
-                    user.rect.bottom = lift.rect.bottom
-
-                    # move to their lift slot
-                    slot_width = (lift.rect.width - 16) // lift.capacity
-                    slot_x = lift.rect.x + 8 + user.lift_slot * slot_width + slot_width // 2
-
-                    if abs(user.rect.centerx - slot_x) > 1:
-                        direction = 1 if user.rect.centerx < slot_x else -1
-                        user.rect.x += direction * USER_SPEED * delta_time
-                    else:
-                        user.rect.centerx = slot_x
-
-                # if user has left the screen, update score
-                if not 0 <= user.rect.x <= WIDTH - USER_WIDTH:
-                    users_to_remove.append(user)
-                    state.served_users += 1
-
-            # user is arriving/waiting for the lift
-            else:
-
-                # ensure the user is on the floor
-                user.rect.bottom = state.building_height - current_floor * FLOOR_HEIGHT
-
-                if user.patience:
-
-                    # move towards the lift
-                    side = int(user.rect.centerx < lift.rect.centerx)
-                    user.rect.x += [-1, 1][side] * USER_SPEED * delta_time
-
-                    # # move them to the back of the queue for the side they are on
-                    others = [
-                        other for other in state.all_users
-                        if (
-                            other.lift_slot is None
-                            and other.floor == user.floor
-                            and other != user
-                            and other.patience > 0
-                        )
-                    ]
-                    if user.rect.centerx < lift.rect.centerx:
-                        end_of_queue = min(
-                            lift.rect.right,
-                            *(
-                                other.rect.left for other in others
-                                if user.rect.right < other.rect.left < lift.rect.left
-                            ),
-                            WIDTH,
-                        )
-                        if end_of_queue <= user.rect.right + 5:
-                            user.rect.right = end_of_queue - 5
-                            user.waiting = True
-                    else:
-                        end_of_queue = max(
-                            lift.rect.left,
-                            *(
-                                other.rect.right for other in others
-                                if user.rect.left > other.rect.right > lift.rect.right
-                            ),
-                            0,
-                        )
-                        if end_of_queue >= user.rect.left - 5:
-                            user.rect.left = end_of_queue + 5
-                            user.waiting = True
-
-                    # if the lift is not on their floor or full, don't let them board
-                    if lift_floor != user.floor or all(lift.passengers):
-                        if side:
-                            user.rect.right = min(user.rect.right, lift.rect.left - 5)
-                        else:
-                            user.rect.left = max(user.rect.left, lift.rect.right + 5)
- 
-                    # board the lift if it is on their floor
-                    elif lift.rect.left <= user.rect.centerx <= lift.rect.right:
-                        slots = set(range(lift.capacity))
-                        occupied = {i for i, p in enumerate(lift.passengers) if p}
-                        available = slots - occupied
-                        user.lift_slot = random.choice(list(available))
-                        user.rect.bottom = lift.rect.bottom
-                        lift.passengers[user.lift_slot] = user
-
-                    if user.waiting:
-                        if user.patience:
-                            user.patience = max(0, user.patience - delta_time)
-                            if user.patience == 0:
-                                assets(f"huff{random.choice(range(2)):02d}").play()
-
-                else:
-
-                    # user has run out of patience, move off screen
-                    direction = -1 if user.rect.centerx < lift.rect.centerx else 1
-                    user.rect.x += direction * USER_ANGRY_SPEED * delta_time
-
-                    if not -USER_WIDTH < user.rect.centerx < WIDTH + USER_WIDTH:
-                        users_to_remove.append(user)
-                        state.complaints += 1
-
-            # user color indicates patience level: white -> red
-            i = 1 if user.patience > 5 else user.patience / 6
-            cx, cy = user.rect.centerx, min(HEIGHT, max(0, user.rect.top - camera.top))
-            ch = 30
-            poly = [(cx - 20, cy), (cx + 20, cy), (cx, cy + ch)]
-            if cy == 0:
-                poly = [(cx - 20, ch), (cx, 0), (cx + 20, ch)]
-            elif cy == HEIGHT:
-                poly = [(cx - 20, HEIGHT - ch), (cx + 20, HEIGHT - ch), (cx, HEIGHT)]
-                cy = HEIGHT - ch
-
-            label = pg.Font(None, 30).render(f"{user.destination:d}", True, "black")
-            pg.draw.polygon(screen, (255, int(255 * i), int(255 * i)), poly)
-            screen.blit(label, label.get_rect(midtop=(cx, cy)))
-            screen.blit(user.image, user.rect.move(0, -camera.top))
-
-        while users_to_remove:
-            state.all_users.remove(users_to_remove.pop())
-
-        # draw clock
-        time = "{0:02d}:{1:02d}".format(*divmod(int(shared_state["time_to_next_level"]), 60))
-        outline_text(screen, time, arco_font, "white", move_to={"centerx": WIDTH // 2, "top": 10})
-
-        shared_state["time_to_next_level"] -= delta_time
-        if shared_state["time_to_next_level"] <= 0:
-            shared_state["served_users"] = state.served_users
-            shared_state["complaints"] = state.complaints
-            shared_state["num_floors"] = state.num_floors + 1
+        state.time_to_next_level -= delta_time
+        if state.time_to_next_level <= 0:
             return end_level()
-
-        # draw score
-        screen.blit(assets("gauge"), assets("gauge").get_rect(bottom=HEIGHT))
-        outline_text(screen, f"{state.served_users:04d}", arco_font, "white", move_to={"left": 180, "bottom": HEIGHT - 20})
-        outline_text(screen, f"{state.complaints:04d}", arco_font, "white", move_to={"right": 620, "bottom": HEIGHT - 20})
 
     return _scene
 
@@ -448,10 +492,7 @@ def outline_text(
 
 
 def end_level() -> SceneFn:
-    arco_font = assets("arco")
-    arco_font.set_point_size(50)
-
-    state = {"applauded": False}
+    state.applauded = False
 
     def _scene(
         screen: pg.Surface,
@@ -466,18 +507,19 @@ def end_level() -> SceneFn:
                 (event.type == pg.KEYDOWN and event.key == pg.K_SPACE)
                 or event.type == pg.MOUSEBUTTONDOWN
             ):
-                shared_state["level_duration"] += 10.0
-                shared_state["time_to_next_level"] = shared_state["level_duration"]
+                state.level_duration += 10.0
+                state.num_floors += 1
+                state.time_to_next_level = state.level_duration
                 return play()
 
-        served = shared_state.get("served_users", 0)
-        total = served + shared_state.get("complaints", 0)
+        served = state.served_users
+        total = served + state.complaints
         if total > 0:
             star_rating = max(0, min(3, round((served / total) * 3)))
             screen.fill("blue" if star_rating else "darkred")
-            if star_rating == 3 and not state["applauded"]:
+            if star_rating == 3 and not state.applauded:
                 assets("applause").play()
-                state["applauded"] = True
+                state.applauded = True
             outline_text(
                 screen,
                 "Level Complete!",
@@ -509,11 +551,9 @@ def main_menu() -> SceneFn:
     ) -> SceneFn | None:
         for event in events:
             if event.type == pg.KEYDOWN or event.type == pg.MOUSEBUTTONDOWN:
-                shared_state |= {
-                    "level_duration": 180.0,
-                    "time_to_next_level": 180.0,
-                    "num_floors": 10,
-                }
+                state.level_duration = 180.0
+                state.time_to_next_level = state.level_duration
+                state.num_floors = 10
                 return play()
 
         screen.blit(assets("title"), (0, 0))
